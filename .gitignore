@@ -26,3 +26,6 @@ dist/
 .DS_Store
 Thumbs.db
 *~
+
+# Host-side test output
+build_tests/
