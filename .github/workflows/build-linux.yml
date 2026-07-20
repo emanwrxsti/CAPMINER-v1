@@ -1,0 +1,81 @@
+name: Build Linux miners
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host dependencies
+        run: sudo apt-get update && sudo apt-get install -y g++ python3 cmake ninja-build
+      - name: Run host correctness tests
+        run: chmod +x tests/build_and_run.sh && ./tests/build_and_run.sh
+      - name: Compile Linux host/stub build
+        run: |
+          cmake -S . -B build-host -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCAPMINER_ENABLE_CUDA=OFF \
+            -DCAPMINER_ENABLE_OPENCL=OFF
+          cmake --build build-host --parallel 2
+          ./build-host/capminer --help >/dev/null
+
+  cuda-linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: capminer-linux-modern
+            image: nvidia/cuda:13.3.0-devel-ubuntu24.04
+            archs: '75;86;89;120'
+          - artifact: capminer-linux-universal
+            image: nvidia/cuda:12.8.2-devel-ubuntu24.04
+            archs: '52;61;75;86;89;120'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile in official CUDA container
+        env:
+          CUDA_IMAGE: ${{ matrix.image }}
+          CUDA_ARCHS: ${{ matrix.archs }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          mkdir -p "dist/$ARTIFACT"
+          docker run --rm \
+            -e CUDA_ARCHS="$CUDA_ARCHS" \
+            -e ARTIFACT="$ARTIFACT" \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$PWD:/src" -w /src "$CUDA_IMAGE" bash -lc '
+              set -euo pipefail
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                build-essential cmake ninja-build ca-certificates
+              cmake -S . -B build-cuda -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCAPMINER_ENABLE_CUDA=ON \
+                -DCAPMINER_ENABLE_OPENCL=OFF \
+                -DCAPMINER_CUDA_ARCHITECTURES="$CUDA_ARCHS"
+              cmake --build build-cuda --parallel "$(nproc)"
+              strip build-cuda/capminer || true
+              cp build-cuda/capminer "dist/$ARTIFACT/capminer"
+              cp START_MINING.sh README-LINUX.md "dist/$ARTIFACT/"
+              chmod +x "dist/$ARTIFACT/capminer" "dist/$ARTIFACT/START_MINING.sh"
+              cd "dist/$ARTIFACT"
+              sha256sum capminer START_MINING.sh README-LINUX.md > SHA256SUMS
+              chown -R "$HOST_UID:$HOST_GID" "/src/dist/$ARTIFACT"
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}/
+          if-no-files-found: error

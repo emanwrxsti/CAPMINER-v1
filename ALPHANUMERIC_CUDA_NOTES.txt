@@ -1,0 +1,31 @@
+Alphanumeric CUDA addition
+==========================
+
+This zip adds an Alphanumeric CUDA BLAKE3-92 engine to the capminer C++/CUDA project.
+
+New CLI:
+  capminer.exe --algo alphanumeric --benchmark --devices 0 --threads 256 --blocks-per-sm 24 --bench-seconds 5 --no-opencl
+
+Important:
+  This is a GPU hashing engine and benchmark/self-test mode. It does not yet speak the Alphanumeric Rust node's mining loop or submit blocks. To mine for real, wire this engine into the Alphanumeric Rust node miner or build an Alphanumeric Stratum/RPC submit path.
+
+Changed files:
+  CMakeLists.txt
+  README.md
+  examples/alphanumeric_benchmark_5080.bat
+  src/config.hpp
+  src/config.cpp
+  src/main.cpp
+  src/alphanumeric/alphanumeric_cuda_backend.hpp
+  src/alphanumeric/alphanumeric_cuda_backend.cu
+  src/alphanumeric/alphanumeric_cuda_stub.cpp
+  src/alphanumeric/alphanumeric_runner.hpp
+  src/alphanumeric/alphanumeric_runner.cpp
+
+Build:
+  Open Developer PowerShell for VS 2022.
+  cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCAPMINER_ENABLE_CUDA=ON -DCAPMINER_ENABLE_OPENCL=OFF
+  cmake --build build --config Release
+
+Target:
+  CMAKE_CUDA_ARCHITECTURES 120 for RTX 5080 / Blackwell.

@@ -1,0 +1,271 @@
+================================================================================
+ALPHANUMERIC CUDA KERNEL - STAGED OPTIMIZATION NOTES (July 12, 2026)
+================================================================================
+
+Baseline before this pass (from tune_rtx5080_results.csv, RTX 5080, CUDA 13.3,
+sm_120): 12.302 GH/s at --threads 512 --blocks-per-sm 4, kernel at 50 regs,
+0 bytes local, 5120 bytes shared, batch 2^24.
+
+This pass restructures the kernel and host path in the eight requested stages.
+Every math change is verified in three independent ways WITHOUT a GPU (see
+"Verification" below); the throughput numbers themselves must come from your
+5080 - no performance numbers in this document are estimates or guesses, and
+none are claimed.
+
+--------------------------------------------------------------------------------
+FILES
+--------------------------------------------------------------------------------
+new      src/alphanumeric/alphanumeric_blake3_core.cuh   shared device/host math
+new      src/alphanumeric/alphanumeric_ref_hash.hpp      independent byte-path ref
+rewrite  src/alphanumeric/alphanumeric_cuda_backend.cu   kernel + host pipeline
+edit     src/alphanumeric/alphanumeric_cuda_backend.hpp  +request_cancel, +bench batch API
+edit     src/alphanumeric/alphanumeric_cuda_stub.cpp     mirrors new API; CPU ref now real
+edit     src/alphanumeric/alphanumeric_runner.cpp        cancel hooks, --verify, sweep
+edit     src/config.hpp / src/config.cpp                 --verify, --bench-batch-log2,
+                                                         --bench-sweep, batch_ms 50 -> 15
+edit     README.md                                       new flags + tuned examples
+new      tests/host_kat_test.cpp                         host-compiled device math + logic tests
+new      tests/cross_check_blake3.py                     official blake3 lib cross-check
+new      tests/cuda_syntax_check/cuda_runtime.h          g++ type-check shim for the .cu
+new      tests/build_and_run.sh, tests/run_host_tests.bat
+new      VERIFY_AND_BENCH_5080.bat                       one-command build+verify+bench
+
+CMakeLists.txt is untouched: the compiled source filenames did not change and
+the new files are headers or standalone tests.
+
+--------------------------------------------------------------------------------
+STAGE 1 - poll fix
+--------------------------------------------------------------------------------
+Old:  if(((poll++) & 255u) == 0u && ...)   -> the check fired on the FIRST
+      iteration of every thread (poll==0), so every thread paid a global read
+      of result->found before hashing anything.
+New:  if(((++poll) & 255u) == 0u && (__ldcg(&result->found) != 0u ||
+                                     __ldcg(live_gen) != job_gen))
+      -> first global read after 255 hashes, then every 256.
+
+The read also moved from a volatile pointer to __ldcg (L2-coherent load),
+which is the correct primitive for polling a flag written by atomicCAS from
+other blocks / by the host.
+
+--------------------------------------------------------------------------------
+STAGE 2 - reduction replacement (deficit accounting)
+--------------------------------------------------------------------------------
+Old:  every launch: 512-entry shared uint64 array, 9 __syncthreads passes,
+      one atomicAdd per block to accumulate hashes_scanned.
+New:  each thread's completed-iteration count has a closed form, so the kernel
+      only accounts for the DIFFERENCE (deficit = expected - done):
+
+        expected(tid) = tid < n ? (n - 1 - tid) / stride + 1 : 0
+        done          = poll - (bailed ? 1 : 0)
+
+      poll counts loop-body entries; the single entry that did not hash is a
+      bail-break (found-break hashes first, so bailed stays false there). The
+      deficit is warp-reduced with __shfl_down_sync, then one 16-word shared
+      array + ONE __syncthreads combines warps, and the block adds to
+      result->deficit ONLY when it is nonzero. On the common full-scan path
+      that atomic never fires and the whole epilogue is a few shuffles.
+
+      The host then reports hashes_scanned = enqueued - deficit. This is exact
+      for every mix of full scans, found-breaks and cancel-bails (verified by
+      the loop simulator, test 7), so the displayed hashrate stays honest.
+
+Deliberate deviation from the task's literal suggestion: "if no share found,
+thread 0 of block 0 writes nonce_count" is racy across blocks (a block can
+observe found==0 while another block is mid-CAS) and silently over-reports.
+The deficit scheme gives the same zero-cost common path with exact results in
+all interleavings.
+
+DeviceScanResult was re-laid-out to {found, pad, deficit, nonce, hash[32]} so
+the per-launch clear is a single 16-byte cudaMemsetAsync (found+deficit only;
+nonce/hash are gated by found and never read stale). Layout is locked with
+static_asserts.
+
+--------------------------------------------------------------------------------
+STAGE 3 - 32-bit index arithmetic
+--------------------------------------------------------------------------------
+idx, stride and nonce_count are now uint32_t inside the kernel; the only
+64-bit math per iteration is nonce = start_nonce + (uint64)idx. A single
+launch is capped at SLICE_MAX = 2^31 nonces so idx + stride cannot wrap
+(stride < 2^25 in practice). Larger requests are split host-side into
+sequential slices on the same stream; between slices the host peeks the found
+flag so a share stops further slices. Normal mining batches (<= 2^28) are
+exactly one slice and pay nothing.
+
+start_nonce stays uint64. Wrap past 2^64 is well-defined unsigned arithmetic
+and produces distinct nonces (documented as safe rollover; the planner test
+covers ranges that wrap).
+
+--------------------------------------------------------------------------------
+STAGE 4 - stream pipeline
+--------------------------------------------------------------------------------
+DevCtx now owns a nonblocking cudaStream_t. scan92 is: cudaMemsetAsync(16B) ->
+kernel launch(es) -> cudaMemcpyAsync into a pinned host result -> ONE
+cudaStreamSynchronize. cudaDeviceSynchronize is gone from the hot path, and
+the result copy no longer implicitly serializes the whole device.
+
+--------------------------------------------------------------------------------
+STAGE 5 - configurable batch + honest latency reporting
+--------------------------------------------------------------------------------
+- Live mining: --batch-ms default changed 50 -> 15 (the auto-sizer already
+  targeted wall-time; with in-kernel cancel there is no reason to run long
+  batches for throughput, and 15 ms keeps share latency low).
+- Benchmark: alphanumeric_cuda_benchmark_batch(dev, threads, bpsm, seconds,
+  batch) returns {GH/s, avg_batch_ms, launches_per_sec, accounting_ok, ...}.
+  avg_batch_ms is measured wall time per scan call (kernel + launch + sync
+  overhead), not a derived guess. accounting_ok cross-checks stage 2 on the
+  device: with the benchmark's impossible target every launch must report
+  exactly `batch` completed hashes.
+- CLI: --bench-batch-log2 N (default 24) picks the batch; --bench-sweep prints
+  the 2^24..2^28 table. Old --benchmark output format is preserved with the
+  extra fields appended.
+
+--------------------------------------------------------------------------------
+STAGE 6 - hash-path optimization
+--------------------------------------------------------------------------------
+Two changes, both in alphanumeric_blake3_core.cuh, both taking effect for
+every nonce:
+
+a) Per-job round-0 precompute. In compress-0 round 0 the four column G mixes
+   consume m0..m7 and the diagonals consume (m8,m9) (m10,m11) (m12,m13)
+   (m14,m15). The nonce lives only in m11/m12, so six of the eight G mixes are
+   nonce-independent. The host applies them once per job
+   (alpha_build_job_pre) and ships the partial state in the kernel parameter;
+   the kernel finishes round 0 with just the two nonce-carrying diagonals.
+   Saves 6 of 112 G mixes per hash.
+
+b) First-word fast path with a split final round. The share test needs only
+   the first big-endian word to reject virtually every nonce. h0 = v0 ^ v8;
+   in the final round v0 is finalized by diagonal G(0,5,10,15) and v8 by
+   diagonal G(2,7,8,13). alpha_hash92_head() therefore runs the final round's
+   four columns plus only those two diagonals and returns h0 with the register
+   state still live; the other two diagonals and the h1..h7 XORs
+   (alpha_hash92_tail) run only for word-0 candidates and for full-hash
+   callers. Saves 2 more G mixes plus 7 output XORs per rejected nonce.
+
+   The tie path is unchanged in meaning: b0 < t0 accepts, b0 > t0 rejects,
+   b0 == t0 completes the hash and runs the byte-lexicographic tail compare
+   with equality valid - exactly the semantics the pool validated.
+
+All message-schedule literals in the header were REGENERATED programmatically
+from the official BLAKE3 permutation [2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8]
+and diffed against the shipped kernel's 56 hand-written g() calls: identical.
+The generated code is what compiles; the derivation removes transcription risk.
+
+Nonce injection uses templated compile-time selectors (alpha_m0_sel<I>), so
+slot 11/12 reads fold to the nl/nh registers and block-1 slots >= 7 fold to
+literal zero - no runtime branching, no local-memory message array.
+
+--------------------------------------------------------------------------------
+JOB-CANCEL (stage-8-lite, implemented now because it is cheap and material)
+--------------------------------------------------------------------------------
+alphanumeric_cuda_request_cancel(): bumps an atomic job generation, writes it
+to a pinned staging word and cudaMemcpyAsync's 4 bytes to the device on a
+dedicated side stream. The kernel compares its launch-time generation against
+the device word in the same 256-hash poll as the found flag and drains in
+roughly the time of 255 hashes per thread. The runner calls it right after
+both cancel.store(true) sites (mining.notify and mining.set_difficulty), so a
+new job no longer waits for the old batch. Fire-and-forget by design: a lost
+or late write only means the batch finishes normally and the existing job_seq
+staleness check discards the result. Deficit accounting keeps the reported
+hashrate exact for drained batches.
+
+--------------------------------------------------------------------------------
+STAGE 7 - profiling (run on the 5080; nothing to profile in a no-GPU sandbox)
+--------------------------------------------------------------------------------
+After building Release:
+
+  ncu --set full --kernel-name alpha_scan_kernel ^
+      build\Release\capminer.exe --algo alphanumeric --benchmark ^
+      --devices 0 --threads 512 --blocks-per-sm 4 --bench-seconds 2 --no-opencl
+
+Metrics that matter for this kernel, in order:
+  sm__throughput.avg.pct_of_peak_sustained_elapsed      (want ALU-bound, high)
+  sm__inst_executed_pipe_alu / lsu / fma splits          (should be ~all ALU)
+  launch__registers_per_thread                           (was 50; watch for spills)
+  memory__local ld/st (local_load/store_bytes)           (must stay 0)
+  smsp__average_warp_latency_per_inst_issued             (stall breakdown)
+  sm__warps_active.avg.pct_of_peak_sustained_active      (occupancy; 512x4 was best)
+
+Also confirm resource usage without ncu:
+  cuobjdump --dump-resource-usage build\Release\capminer.exe | findstr /C:"alpha_scan"
+and the arch actually embedded:
+  cuobjdump --list-elf build\Release\capminer.exe    (expect sm_120)
+
+SASS spot-checks (optional but quick):
+  cuobjdump -sass build\Release\capminer.exe > capminer.sass
+  - G-mix rotates should appear as single SHF.R instructions (funnel shift).
+  - grep the scan kernel region for LDL/STL: there should be none (no local).
+  - The h0 fast path shows as an early predicated branch after the first BSWAP
+    (PRMT) + compare.
+
+--------------------------------------------------------------------------------
+STAGE 8 - persistent kernel: evaluated, deferred
+--------------------------------------------------------------------------------
+A persistent kernel (grid resident across jobs, work fed via mapped memory)
+removes per-launch overhead. Measured need first: with batch 2^26 at the
+baseline rate a launch is ~5.5 ms of work; launch+sync overhead is tens of
+microseconds (avg_batch_ms in --bench-sweep now measures it directly as the
+gap between wall time and pure kernel time across batch sizes). Unless the
+sweep shows avg_batch_ms materially exceeding the kernel time at your chosen
+batch, a persistent kernel buys < 1% and costs: watchdog/TDR interaction on a
+display GPU, harder cancel semantics, a custom work queue, and much harder
+correctness auditing. The generation-cancel already delivers the
+responsiveness benefit. If the sweep does show meaningful per-launch overhead
+at small batches, the prepared design is: one resident grid sized to
+sm_count*bpsm blocks, a mapped-memory job slot {gen, AlphaJobPre, start,
+count} the host rewrites, kernel loops on gen change, deficit accounting
+unchanged per work item. Not implemented in this pass - measure first.
+
+--------------------------------------------------------------------------------
+VERIFICATION (what ran here vs what runs on your 5080)
+--------------------------------------------------------------------------------
+Ran in this environment (no GPU, no nvcc - all PASSED):
+
+  tests/build_and_run.sh
+    1. host_kat_test (g++ -O2, compiles the EXACT .cuh device math on its
+       host path):
+       - shipped self-test vector: word path == byte reference ==
+         e7a3b0b20399b8ea... - the same value your 5080 logged in
+         alpha_debug.log on July 10, anchoring new math to real GPU output
+       - 2,000 field-serialization word sets vs the byte serializer
+       - 20,000 random word-path vs byte-path hashes (200 jobs x 100 nonces,
+         nonce edges 0 / 2^32-1 / 2^32 / 2^64-1 pinned per job)
+       - 5,000 head/tail split checks (head h0 == full h[0]; tail completes
+         identically from retained state)
+       - 20,000 target-compare cases incl. exact equality, +/-1, word-0 ties
+       - 50,000 brute-force checks of the expected-iterations closed form
+       - 3,000 simulated launches of the kernel loop control: no nonce
+         skipped, none duplicated, done-bookkeeping exact, and
+         hashed + deficit == count under bails and found-breaks
+       - 20,000 slice plans incl. 2^64-wrapping ranges: exact partition,
+         every slice <= 2^31
+    2. cross_check_blake3.py: official blake3 pip library vs the byte
+       reference (16 raw headers) and vs the field serialization + word path
+       (64 field sets incl. nonce edges) - 0 mismatches
+    3. g++ full type check of the real .cu through the CUDA shim
+       (tests/cuda_syntax_check) so no typo reaches your nvcc build
+
+Must run on your 5080 (cannot be produced here):
+
+  VERIFY_AND_BENCH_5080.bat        one command: clean CMake Release build,
+                                   cuobjdump arch check, --verify 2000,
+                                   baseline benchmark at 2^24, batch sweep
+  then live pool mining            pool-validated shares remain the final
+                                   authority, as always
+
+release-package\capminer.exe is the OLD binary: it cannot be rebuilt in this
+environment (no nvcc / no Windows toolchain). After VERIFY_AND_BENCH_5080.bat
+passes, refresh it with:
+
+  copy /Y build\Release\capminer.exe release-package\capminer.exe
+
+--------------------------------------------------------------------------------
+BASELINE / RESULT TABLE (fill the right column from your runs)
+--------------------------------------------------------------------------------
+  config                                    before          after (your 5080)
+  ---------------------------------------   -------------   -----------------
+  --threads 512 --blocks-per-sm 4, 2^24     12.302 GH/s     ______
+  --bench-sweep best batch                  n/a             ______ @ 2^__
+  --verify 2000                             n/a             PASS/FAIL
+  live pool (share-validated)               ~12.3 GH/s      ______
+================================================================================

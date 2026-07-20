@@ -1,0 +1,124 @@
+Alphanumeric Stratum protocol expected by capminer
+==================================================
+
+This miner now connects to a Stratum/Miningcore endpoint for --algo alphanumeric.
+The CUDA engine is live-wired: it subscribes, authorizes, waits for mining.notify,
+scans nonces on the RTX GPU, then sends mining.submit.
+
+Important: Miningcore still needs an Alphanumeric pool/coin module that emits the
+job format below and validates the submit. A stock Bitcoin/Equihash/Etc Miningcore
+pool will not magically create Alphanumeric jobs.
+
+1) Subscribe/authorize
+----------------------
+capminer sends normal Stratum v1 messages:
+
+{"id":1,"method":"mining.subscribe","params":["capminer/0.1"]}
+{"id":2,"method":"mining.authorize","params":["WALLET.WORKER","x"]}
+
+2) Job notify object format, recommended
+----------------------------------------
+Send this from Miningcore:
+
+{
+  "id": null,
+  "method": "mining.notify",
+  "params": [{
+    "job_id": "12345",
+    "block_number": 2471,
+    "previous_hash": "64_hex_chars_raw_previous_hash_bytes",
+    "timestamp": 1800000000,
+    "difficulty": 464,
+    "merkle_root": "64_hex_chars_raw_merkle_root_bytes",
+    "target": "32_byte_big_endian_share_target_hex_optional",
+    "clean_jobs": true
+  }]
+}
+
+Accepted aliases:
+- job_id: jobId, id
+- block_number: blockNumber, number, height, index
+- previous_hash: previousHash, prev_hash, prevHash, prevhash
+- merkle_root: merkleRoot, merkle
+- difficulty: block_difficulty, blockDifficulty, header_difficulty, headerDifficulty
+- target: target_be, targetBe, share_target, shareTarget
+- clean_jobs: cleanJobs, clean
+
+If target is omitted/null/empty, the miner derives target from Alphanumeric's
+consensus mapping:
+
+    target = (2^256 - 1) >> (difficulty / 16)
+
+For pool shares, send an easier share target in target. For solo/block-only,
+omit target and difficulty becomes the network block target.
+
+3) Job notify array format, also accepted
+-----------------------------------------
+
+{
+  "id": null,
+  "method": "mining.notify",
+  "params": [
+    "12345",
+    2471,
+    "64_hex_chars_raw_previous_hash_bytes",
+    1800000000,
+    464,
+    "64_hex_chars_raw_merkle_root_bytes",
+    "32_byte_big_endian_share_target_hex_optional",
+    true
+  ]
+}
+
+Array order:
+[ job_id, block_number, previous_hash, timestamp, difficulty, merkle_root, target, clean_jobs ]
+
+4) Submit formats
+-----------------
+Default --alpha-submit-format miningcore sends:
+
+{
+  "id": 101,
+  "method": "mining.submit",
+  "params": [{
+    "user": "WALLET.WORKER",
+    "job_id": "12345",
+    "nonce": 987654321,
+    "nonce_hex": "000000003ade68b1",
+    "timestamp": 1800000000,
+    "difficulty": 464,
+    "hash": "32_byte_hash_hex"
+  }]
+}
+
+Other supported formats:
+
+--alpha-submit-format extended
+params = ["WALLET.WORKER", "job_id", nonce, timestamp, difficulty, "hashhex"]
+
+--alpha-submit-format compact
+params = ["WALLET.WORKER", "job_id", nonce]
+
+--alpha-submit-format bitcoin
+params = ["WALLET.WORKER", "job_id", "", "timestamp", "nonce_hex"]
+
+The object format is the safest for a new Miningcore Alphanumeric module because
+it is unambiguous.
+
+5) Header bytes hashed by CUDA
+------------------------------
+The GPU hashes exactly 92 bytes:
+
+u32 block_number little-endian
+32 bytes previous_hash raw
+u64 timestamp little-endian
+u64 nonce little-endian
+u64 difficulty little-endian
+32 bytes merkle_root raw
+
+Then it computes BLAKE3(header92) and compares raw digest bytes lexicographically
+against the fixed-width 32-byte big-endian target.
+
+
+2026-07-09 timestamp-submit fix:
+For format compact-decstr, capminer now submits [worker, jobId, "nonce", "timestamp"]. The timestamp must match the notify timestamp used by the GPU, because timestamp is part of the 92-byte Alphanumeric PoW header. Omitting timestamp lets Miningcore recompute with server time and can prevent valid block hashes from becoming block candidates.

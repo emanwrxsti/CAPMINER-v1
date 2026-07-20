@@ -1,0 +1,28 @@
+# CMake / IDE builds
+build/
+build-*/
+out/
+.vs/
+.vscode/
+CMakeUserPresets.json
+
+# Generated miner packages and logs
+dist/
+*.log
+*.csv
+*.sha256
+
+# Native build products
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exp
+*.pdb
+
+# OS/editor
+.DS_Store
+Thumbs.db
+*~

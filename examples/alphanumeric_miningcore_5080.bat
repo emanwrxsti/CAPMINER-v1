@@ -1,0 +1,1 @@
+.\Release\capminer.exe --algo alphanumeric --pool stratum+tcp://us.icminers.com:7182 --wallet YOUR_ALPHA_WALLET --worker rtx5080 --pass x --devices 0 --threads 256 --blocks-per-sm 24 --batch-ms 100 --alpha-submit-format compact-decstr --log-file alpha_debug.log --no-opencl

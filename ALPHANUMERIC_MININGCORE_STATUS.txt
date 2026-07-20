@@ -1,0 +1,33 @@
+Alphanumeric Miningcore Stratum Status
+=====================================
+
+This package adds a flexible Alphanumeric mining.notify parser for the live format observed from Miningcore:
+
+  params count=7
+  p0 = job_id string
+  p1 = block height / block number
+  p2 = previous hash hex
+  p3-p6 = compact fields inferred by token type
+
+The miner now supports these array layouts:
+
+  [job_id, block_number, previous_hash, timestamp, difficulty, merkle_root, target, clean_jobs]
+  [job_id, block_number, previous_hash, merkle_root, timestamp, difficulty, clean_jobs]
+  [job_id, block_number, previous_hash, timestamp, merkle_root, difficulty, clean_jobs]
+
+It also accepts object-style jobs.
+
+Build:
+  cmake .. -G "Visual Studio 17 2022" -A x64
+  cmake --build . --config Release
+
+Run:
+  .\Release\capminer.exe --algo alphanumeric --pool stratum+tcp://us.icminers.com:7182 --wallet YOUR_ALPHA_WALLET --worker rtx5080 --pass x --devices 0 --threads 256 --blocks-per-sm 32 --batch-ms 50 --alpha-submit-format miningcore --debug-shares --log-file alpha_debug.log --no-opencl
+
+If jobs parse correctly, the dashboard should show hashrate above 0 H/s and logs similar to:
+  Alphanumeric job id=... block=... difficulty=... target=...
+
+If shares are rejected, switch submit format and retest:
+  --alpha-submit-format compact
+  --alpha-submit-format extended
+  --alpha-submit-format bitcoin

@@ -1,0 +1,29 @@
+Alphanumeric timestamp absolute-submit fix
+=========================================
+
+This build fixes the live Miningcore Alpha notify format:
+
+  [job_id, height, previous_hash, merkle_root, difficulty, target, clean]
+
+That job format does not include a timestamp. Earlier builds accidentally used a
+small relative/scan timestamp such as 4, 7, 27, 842 in mining.submit. Miningcore
+then rebuilt the 92-byte header with that small timestamp, producing a different
+hash and candidate=False.
+
+This build now chooses a normal Unix timestamp when the job is received and uses
+that same timestamp for:
+
+  1. CUDA BLAKE3-92 hashing
+  2. mining.submit compact-decstr fourth parameter
+
+A correct RAW SUBMIT now looks like:
+
+  ["wallet.worker","jobid","nonce","1783xxxxxx"]
+
+not:
+
+  ["wallet.worker","jobid","nonce","27"]
+
+Recommended command:
+
+  capminer.exe --algo alphanumeric --pool stratum+tcp://us.icminers.com:7182 --wallet YOUR_ALPHA_WALLET --worker rtx5080 --pass x --devices 0 --threads 256 --blocks-per-sm 32 --batch-ms 50 --alpha-submit-format compact-decstr --debug-shares --log-file alpha_debug.log --no-opencl

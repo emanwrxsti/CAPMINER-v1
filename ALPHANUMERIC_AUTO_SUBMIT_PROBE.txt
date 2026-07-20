@@ -1,0 +1,36 @@
+Alphanumeric Miningcore auto submit probe
+========================================
+
+This build changes --alpha-submit-format default to auto.
+
+Why:
+- The miner now parses the live 7-param Miningcore Alpha job and hashes at ~12 GH/s.
+- The first object submit reached the pool but returned job not found.
+- The first Miningcore positional submit reached the pool but returned missing nonce.
+- That means the pool's custom Alpha submit parser uses a different parameter shape.
+
+Auto/probe mode submits the same valid nonce using the common shapes:
+- miningcore:       [user, job_id, "", timestamp, nonce_hex]
+- miningcore-dec:   [user, job_id, "", timestamp, nonce_dec]
+- compact:          [user, job_id, nonce_dec]
+- compact-decstr:   [user, job_id, "nonce_dec"]
+- compact-hex:      [user, job_id, "nonce_hex"]
+- extended:         [user, job_id, nonce_dec, timestamp, difficulty, hash]
+- extended-hex:     [user, job_id, nonce_hex, timestamp, difficulty, hash]
+- object:           [{user, job_id, nonce, nonce_hex, timestamp, difficulty, hash}]
+- object-camel:     [{user, jobId, nonce, nonceHex, timestamp, difficulty, hash}]
+- object-raw-camel: {user, jobId, nonce, nonceHex, timestamp, difficulty, hash}
+
+Run with:
+
+capminer.exe --algo alphanumeric --pool stratum+tcp://us.icminers.com:7182 --wallet YOUR_ALPHA_WALLET --worker rtx5080 --pass x --devices 0 --threads 256 --blocks-per-sm 32 --batch-ms 50 --alpha-submit-format auto --debug-shares --log-file alpha_debug.log --no-opencl
+
+When you see:
+
+ACCEPTED submit format found: <format>
+
+rerun with only that format, for example:
+
+capminer.exe --algo alphanumeric --pool stratum+tcp://us.icminers.com:7182 --wallet YOUR_ALPHA_WALLET --worker rtx5080 --pass x --devices 0 --threads 256 --blocks-per-sm 32 --batch-ms 50 --alpha-submit-format compact --debug-shares --log-file alpha_debug.log --no-opencl
+
+If every format returns rejected, the remaining issue is server-side: the Miningcore Alpha submit handler has a field name or ordering that is not one of the common contracts. In that case paste the RAW SUBMIT lines plus reject lines from alpha_debug.log.

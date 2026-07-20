@@ -1,0 +1,58 @@
+Alphanumeric BLAKE3-92 word-path kernel optimization
+====================================================
+
+What changed (src/alphanumeric/alphanumeric_cuda_backend.cu only; public API,
+runner, stratum, and submit paths untouched):
+
+1. Per-job word precompute (the big one).
+   Only header words w11/w12 (the nonce) change per hash. The old kernel
+   rebuilt the whole 92-byte header as a uint8_t[92] local array every nonce,
+   memset a 64-byte block, and byte-loaded 32 words -- byte-addressed local
+   arrays spill to local memory on nvcc, so every hash paid local-memory
+   round trips on top of the 14 BLAKE3 rounds. Now the host packs both
+   message blocks and the target into an AlphaJobWords struct once per launch
+   and passes it by value as a kernel parameter; the kernel only writes the
+   two nonce words. Zero byte arrays in the hot loop.
+
+2. Literal-expanded message schedule.
+   All 7 rounds are emitted with literal m[] indices (the permute-per-round
+   loop is gone), so message and state provably stay in registers.
+
+3. Compress computes only out[0..7]; the upper 8 feed-forward words are
+   never needed for a 1-chunk hash. Saves 8 XORs + 8 registers per compress.
+
+4. Early-exit target compare.
+   Target is precomputed as 8 big-endian u32 words. The kernel byte-swaps
+   hash word 0 (__byte_perm) and compares one u32; the 7-word tail only runs
+   on a word-0 tie. Byte-lexicographic semantics preserved exactly,
+   including hash == target counting as a share.
+
+5. Host launch path slimmed.
+   d_prev/d_merkle/d_target device buffers and their 3 per-launch memcpys
+   are gone (job words ride in kernel params). The result struct is only
+   re-zeroed after a launch that found a share, and is read back through
+   pinned memory. rotr uses __funnelshift_r.
+
+Verification (KATs, run against this exact code shape):
+  - 20,000 random vectors + nonce edges (0, 2^32-1, 2^32, 2^64-1):
+    word-path hash == existing byte-path reference (the implementation your
+    pool already accepts shares from) for all vectors.
+  - 64 vectors cross-checked against the official blake3 library over the
+    exact 92-byte Rust header serialization (miner.rs layout): all match.
+  - Target compare: word compare == byte-lexicographic compare on random
+    targets, plus equality and target = hash-1 edge cases.
+  The startup GPU-vs-CPU self-test still runs and now exercises the new
+  word path end to end on the device.
+
+Tuning on the RTX 5080:
+  Start with --threads 256 --blocks-per-sm 24. The old 512/32 launch is
+  still accepted (threads are clamped to 512 to match __launch_bounds__),
+  but 256 threads usually schedules better with this register-heavy kernel.
+  Try --batch-ms 100: jobs only arrive ~1/s, so 50ms batches double the
+  launch/sync overhead for no staleness benefit. Run
+  examples/alphanumeric_benchmark_5080.bat before/after and A/B
+  256/24 vs 384/24 vs 512/16 for the last few percent.
+
+Build (unchanged):
+  cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCAPMINER_ENABLE_CUDA=ON -DCAPMINER_ENABLE_OPENCL=OFF
+  cmake --build build --config Release

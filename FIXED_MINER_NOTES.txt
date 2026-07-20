@@ -1,0 +1,56 @@
+ICMINERS CAPMINER - Alphanumeric stop/hashrate fix
+=================================================
+
+Fixed issues
+------------
+1. mining.set_difficulty was logged but ignored by the Alphanumeric CUDA loop.
+   The miner kept using the much harder consensus/network target. As the chain
+   difficulty rose, accepted shares became several minutes apart and the miner
+   appeared to have stopped even though mining.notify jobs kept arriving.
+
+2. The dashboard credited the entire requested CUDA batch after an early share
+   exit. This could report a hashrate several times higher than the work the GPU
+   actually completed.
+
+3. CUDA launch/runtime failures had no recovery path.
+
+4. Network/block target and pool share target were treated as one value.
+
+New behavior
+------------
+- Keeps separate network and effective pool share targets.
+- Applies mining.set_difficulty immediately when notify only supplies the
+  consensus target.
+- Trusts an explicit share target when Miningcore supplies one that differs
+  from the consensus target, avoiding double scaling.
+- Automatically falls back to the exact notify target if the pool rejects a
+  locally scaled share as low difficulty.
+- Counts completed GPU hashes instead of requested hashes.
+- Logs a GPU heartbeat every 30 seconds.
+- Resets/recreates the CUDA context after a CUDA scan failure.
+- Logs block candidates separately when a pool share also meets the network
+  target.
+
+Expected log examples
+---------------------
+Alphanumeric job ... header_difficulty=680 pool_diff=0.100000
+  network_target=00000000003fffff...
+  share_target=00000000027fffff...
+  target_source=set_difficulty
+
+Alphanumeric GPU heartbeat: 17.55 GH/s ...
+
+If the pool does not accept scaled targets, the miner will log:
+Pool rejected a locally scaled target; falling back to the exact mining.notify target
+
+Build on Windows
+----------------
+Open Developer PowerShell for VS 2022 in this folder and run:
+
+  cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCAPMINER_ENABLE_CUDA=ON -DCAPMINER_ENABLE_OPENCL=OFF
+  cmake --build build --config Release
+
+The executable will be:
+  build\Release\capminer.exe
+
+Run START_MINING.bat after copying/replacing the executable as needed.
