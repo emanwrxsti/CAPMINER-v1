@@ -3,7 +3,9 @@ name: Build Linux miners
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, gpu-support-nvidia-amd ]
+  pull_request:
+    branches: [ main ]
     paths-ignore:
       - '**/*.md'
       - '**/*.txt'
@@ -25,6 +27,7 @@ jobs:
           cmake -S . -B build-host -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCAPMINER_ENABLE_CUDA=OFF \
+            -DCAPMINER_ENABLE_HIP=OFF \
             -DCAPMINER_ENABLE_OPENCL=OFF
           cmake --build build-host --parallel 2
           ./build-host/capminer --help >/dev/null
@@ -63,6 +66,7 @@ jobs:
               cmake -S . -B build-cuda -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCAPMINER_ENABLE_CUDA=ON \
+                -DCAPMINER_ENABLE_HIP=OFF \
                 -DCAPMINER_ENABLE_OPENCL=OFF \
                 -DCAPMINER_CUDA_ARCHITECTURES="$CUDA_ARCHS"
               cmake --build build-cuda --parallel "$(nproc)"
@@ -72,6 +76,60 @@ jobs:
               chmod +x "dist/$ARTIFACT/capminer" "dist/$ARTIFACT/START_MINING.sh"
               cd "dist/$ARTIFACT"
               sha256sum capminer START_MINING.sh README-LINUX.md > SHA256SUMS
+              chown -R "$HOST_UID:$HOST_GID" "/src/dist/$ARTIFACT"
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}/
+          if-no-files-found: error
+
+  hip-linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: capminer-linux-amd-radeon
+            image: rocm/dev-ubuntu-24.04:7.2.4
+            archs: 'gfx1030;gfx1031;gfx1032;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201'
+          - artifact: capminer-linux-amd-instinct
+            image: rocm/dev-ubuntu-24.04:7.2.4
+            archs: 'gfx908;gfx90a;gfx942;gfx950'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile in official AMD ROCm container
+        env:
+          ROCM_IMAGE: ${{ matrix.image }}
+          HIP_ARCHS: ${{ matrix.archs }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          mkdir -p "dist/$ARTIFACT"
+          docker run --rm \
+            -e HIP_ARCHS="$HIP_ARCHS" \
+            -e ARTIFACT="$ARTIFACT" \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "$PWD:/src" -w /src "$ROCM_IMAGE" bash -lc '
+              set -euo pipefail
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                build-essential cmake ninja-build ca-certificates
+              cmake -S . -B build-hip -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH=/opt/rocm \
+                -DCMAKE_HIP_COMPILER=/opt/rocm/bin/amdclang++ \
+                -DCAPMINER_ENABLE_CUDA=OFF \
+                -DCAPMINER_ENABLE_HIP=ON \
+                -DCAPMINER_ENABLE_OPENCL=OFF \
+                -DCAPMINER_HIP_ARCHITECTURES="$HIP_ARCHS"
+              cmake --build build-hip --parallel "$(nproc)"
+              strip build-hip/capminer || true
+              cp build-hip/capminer "dist/$ARTIFACT/capminer"
+              cp START_MINING_AMD.sh README-LINUX.md GPU_SUPPORT.md "dist/$ARTIFACT/"
+              chmod +x "dist/$ARTIFACT/capminer" "dist/$ARTIFACT/START_MINING_AMD.sh"
+              cd "dist/$ARTIFACT"
+              sha256sum capminer START_MINING_AMD.sh README-LINUX.md GPU_SUPPORT.md > SHA256SUMS
               chown -R "$HOST_UID:$HOST_GID" "/src/dist/$ARTIFACT"
             '
       - uses: actions/upload-artifact@v4

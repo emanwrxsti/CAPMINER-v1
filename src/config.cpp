@@ -28,20 +28,21 @@ Options:
   --worker     Worker name, default rig1
   --pass       Stratum password, default x
   --devices    Comma list, example 0,1
-  --intensity  CUDA launch intensity (nonces/launch = 2^intensity), default 24
+  --intensity  GPU launch intensity (nonces/launch = 2^intensity), default 24
   --batch-ms   Target milliseconds per GPU launch, default 15 (auto-sizes work)
-  --threads    CUDA threads per block, default 256
-  --blocks-per-sm  Resident blocks per SM, default 24
+  --threads    GPU threads per block, default 256
+  --blocks-per-sm  Resident blocks per SM/CU, default 24
   --debug-shares   Print full header/coinbase/merkle debug for every share
-  --benchmark      Run a CUDA throughput benchmark (no pool needed) and exit
+  --benchmark      Run a GPU throughput benchmark (no pool needed) and exit
   --bench-seconds  Seconds per benchmark config, default 3
   --bench-batch-log2 N  Alphanumeric benchmark batch = 2^N nonces/launch, default 24
   --bench-sweep    Alphanumeric: benchmark batch sizes 2^24..2^28 and print a table
   --verify N       Alphanumeric: run N random GPU-vs-CPU hash checks plus
                    planted-share scan and accounting tests on the GPU, then exit
   --alpha-submit-format  Alphanumeric submit params: auto/probe, miningcore, miningcore-dec, compact, compact-hex, compact-decstr, extended, extended-hex, object, object-camel, object-raw-camel; default auto
-  --no-cuda    Disable NVIDIA CUDA
-  --no-opencl  Disable OpenCL
+  --no-cuda    Disable the compiled CUDA/HIP GPU backend
+  --no-hip     Alias for --no-cuda in an AMD HIP build
+  --no-opencl  Disable legacy OpenCL detection
   --log-file   Write log output to file
   --quiet-dashboard  Show only the status dashboard (clean, redraws in place)
 )";
@@ -72,7 +73,7 @@ MinerConfig parse_args(int argc, char** argv) {
         else if(a=="--bench-sweep") cfg.bench_sweep = true;
         else if(a=="--verify") cfg.alpha_verify = std::stoi(need("--verify"));
         else if(a=="--alpha-submit-format") cfg.alpha_submit_format = need("--alpha-submit-format");
-        else if(a=="--no-cuda") cfg.cuda = false;
+        else if(a=="--no-cuda" || a=="--no-hip" || a=="--no-gpu") cfg.cuda = false;
         else if(a=="--no-opencl") cfg.opencl = false;
         else if(a=="--log-file") cfg.log_file = need("--log-file");
         else if(a=="--quiet-dashboard") cfg.quiet_dashboard = true;

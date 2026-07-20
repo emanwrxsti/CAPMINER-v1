@@ -8,9 +8,16 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 option(CAPMINER_ENABLE_CUDA "Build NVIDIA CUDA backend" ON)
-option(CAPMINER_ENABLE_OPENCL "Build AMD/OpenCL backend" ON)
+option(CAPMINER_ENABLE_HIP "Build AMD HIP/ROCm Alphanumeric backend" OFF)
+option(CAPMINER_ENABLE_OPENCL "Build legacy OpenCL platform detection" OFF)
 set(CAPMINER_CUDA_ARCHITECTURES "75;86;89;120" CACHE STRING
     "CUDA SM architectures to compile, e.g. 75;86;89;120")
+set(CAPMINER_HIP_ARCHITECTURES "gfx1030;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201" CACHE STRING
+    "AMD GPU targets for HIP, e.g. gfx1030;gfx1100;gfx1101;gfx1201")
+
+if(CAPMINER_ENABLE_CUDA AND CAPMINER_ENABLE_HIP)
+  message(FATAL_ERROR "Build CUDA and HIP as separate binaries; enable only one backend per build directory.")
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -60,7 +67,7 @@ if(CAPMINER_ENABLE_CUDA)
     src/cuda_backend.cu
     src/alphanumeric/alphanumeric_cuda_backend.cu
   )
-  target_compile_definitions(capminer PRIVATE CAPMINER_CUDA=1)
+  target_compile_definitions(capminer PRIVATE CAPMINER_CUDA=1 CAPMINER_GPU_BACKEND_CUDA=1)
   set_target_properties(capminer PROPERTIES
     CUDA_STANDARD 17
     CUDA_STANDARD_REQUIRED ON
@@ -71,6 +78,28 @@ if(CAPMINER_ENABLE_CUDA)
   )
   target_compile_options(capminer PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--ptxas-options=-v>
+  )
+elseif(CAPMINER_ENABLE_HIP)
+  if(WIN32)
+    message(FATAL_ERROR "CMake HIP language is not supported by AMD HIP SDK on Windows. Run BUILD_WINDOWS_AMD.bat instead.")
+  endif()
+  enable_language(HIP)
+  set(CMAKE_HIP_STANDARD 17)
+  set(CMAKE_HIP_STANDARD_REQUIRED ON)
+  set(CMAKE_HIP_EXTENSIONS OFF)
+
+  # AMD support currently targets the Alphanumeric BLAKE3-92 engine. The
+  # CapStash Whirlpool backend remains NVIDIA-only, so link its host stub.
+  target_sources(capminer PRIVATE
+    src/cuda_backend_stub.cpp
+    src/alphanumeric/alphanumeric_hip_backend.hip
+  )
+  target_compile_definitions(capminer PRIVATE CAPMINER_HIP=1 CAPMINER_GPU_BACKEND_HIP=1)
+  set_target_properties(capminer PROPERTIES
+    HIP_STANDARD 17
+    HIP_STANDARD_REQUIRED ON
+    HIP_EXTENSIONS OFF
+    HIP_ARCHITECTURES "${CAPMINER_HIP_ARCHITECTURES}"
   )
 else()
   target_sources(capminer PRIVATE

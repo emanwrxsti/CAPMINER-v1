@@ -28,6 +28,14 @@
 
 namespace alphanumeric {
 
+#if defined(CAPMINER_GPU_BACKEND_HIP)
+static constexpr const char* kGpuBackendName = "HIP/ROCm";
+#elif defined(CAPMINER_GPU_BACKEND_CUDA)
+static constexpr const char* kGpuBackendName = "CUDA";
+#else
+static constexpr const char* kGpuBackendName = "GPU";
+#endif
+
 struct AlphaJob {
     std::string job_id;
     uint32_t block_number = 0;
@@ -616,12 +624,12 @@ static bool selftest(int dev) {
     auto cpu = alphanumeric_cpu_hash92(block_number, prev, timestamp, nonce, difficulty, merkle);
     unsigned char gpu[32]{};
     if(!alphanumeric_cuda_hash92(dev, block_number, prev, timestamp, nonce, difficulty, merkle, gpu)) {
-        log_line("Alphanumeric CUDA self-test failed: cuda_hash92 call failed");
+        log_line("Alphanumeric " + std::string(kGpuBackendName) + " self-test failed: GPU hash call failed");
         return false;
     }
 
     const bool ok = std::memcmp(cpu.data(), gpu, 32) == 0;
-    log_line(std::string("Alphanumeric CUDA self-test nonce=") + std::to_string(nonce) +
+    log_line(std::string("Alphanumeric ") + kGpuBackendName + " self-test nonce=" + std::to_string(nonce) +
              " cpu=" + hex_bytes(cpu.data(), 8) + " gpu=" + hex_bytes(gpu, 8) +
              (ok ? " OK" : " MISMATCH"));
     return ok;
@@ -736,7 +744,7 @@ static int run_benchmark(const MinerConfig& cfg, int dev) {
             const AlphanumericBenchResult br = alphanumeric_cuda_benchmark_batch(
                 dev, cfg.threads, cfg.blocks_per_sm, cfg.bench_seconds, 1ull << lg);
             if(!br.ok) {
-                log_line("  2^" + std::to_string(lg) + "  BENCH FAILED (CUDA error above)");
+                log_line("  2^" + std::to_string(lg) + "  BENCH FAILED (GPU backend error above)");
                 any_fail = true;
                 continue;
             }
@@ -753,7 +761,7 @@ static int run_benchmark(const MinerConfig& cfg, int dev) {
     const AlphanumericBenchResult br = alphanumeric_cuda_benchmark_batch(
         dev, cfg.threads, cfg.blocks_per_sm, cfg.bench_seconds, 1ull << cfg.bench_batch_log2);
     if(!br.ok) {
-        log_line("Alphanumeric benchmark failed (CUDA error above).");
+        log_line("Alphanumeric benchmark failed (GPU backend error above).");
         return 1;
     }
     char msg[240];
@@ -874,7 +882,7 @@ static int run_verify(const MinerConfig& cfg, int dev) {
         if(!alphanumeric_cuda_scan92(dev, bn, prev, ts, dif, merkle, best, start, count,
                                      r, stats, cfg.threads, cfg.blocks_per_sm)) {
             ++p2_fail;
-            log_line("VERIFY FAIL phase2 scan=" + std::to_string(s_idx) + " (CUDA error)");
+            log_line("VERIFY FAIL phase2 scan=" + std::to_string(s_idx) + " (GPU backend error)");
             continue;
         }
         const bool hit_ok = r.found && r.nonce == best_nonce &&
@@ -896,7 +904,7 @@ static int run_verify(const MinerConfig& cfg, int dev) {
             if(!alphanumeric_cuda_scan92(dev, bn, prev, ts, dif, merkle, miss, start, count,
                                          r2, stats, cfg.threads, cfg.blocks_per_sm)) {
                 ++p2_fail;
-                log_line("VERIFY FAIL phase2-miss scan=" + std::to_string(s_idx) + " (CUDA error)");
+                log_line("VERIFY FAIL phase2-miss scan=" + std::to_string(s_idx) + " (GPU backend error)");
                 continue;
             }
             if(r2.found || r2.hashes_scanned != count) {
@@ -951,13 +959,13 @@ int run(const MinerConfig& cfg) {
     using namespace std::chrono;
 
     if(!cfg.cuda) {
-        log_line("Alphanumeric mode requires CUDA; remove --no-cuda.");
+        log_line("Alphanumeric mode requires the compiled GPU backend; do not disable it.");
         return 2;
     }
 
     const int dev = cfg.devices.empty() ? 0 : cfg.devices[0];
     alphanumeric_cuda_list_devices();
-    log_line("Alphanumeric CUDA device: " + alphanumeric_cuda_device_name(dev));
+    log_line("Alphanumeric " + std::string(kGpuBackendName) + " device: " + alphanumeric_cuda_device_name(dev));
 
     if(!selftest(dev)) {
         log_line("FATAL: GPU BLAKE3-92 output does not match CPU reference. Refusing to mine.");
@@ -1138,9 +1146,9 @@ int run(const MinerConfig& cfg) {
                                      job.difficulty, job.merkle_root, job.target_be,
                                      next_nonce, count, r, stats,
                                      cfg.threads, cfg.blocks_per_sm)) {
-            log_line("alphanumeric_cuda_scan92 failed; resetting CUDA device before retry");
+            log_line(std::string("GPU scan failed; resetting ") + kGpuBackendName + " device before retry");
             if(!alphanumeric_cuda_reset(dev))
-                log_line("CUDA reset failed; another retry will be attempted");
+                log_line("GPU backend reset failed; another retry will be attempted");
             std::this_thread::sleep_for(milliseconds(250));
             continue;
         }
@@ -1178,7 +1186,7 @@ int run(const MinerConfig& cfg) {
             if(my_seq != job_seq.load(std::memory_order_acquire) || cancel.load(std::memory_order_acquire)) {
                 if(cfg.debug_shares) log_line("stale Alphanumeric share skipped job=" + job.job_id);
             } else if(!hash_le_target_be(r.hash, job.target_be)) {
-                log_line("BUG: CUDA returned a hash above target; refusing submit");
+                log_line("BUG: GPU backend returned a hash above target; refusing submit");
             } else {
                 if(hash_le_target_be(r.hash, job.network_target_be)) {
                     stats.blocks_found++;
