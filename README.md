@@ -23,17 +23,6 @@ Included:
 - OpenCL kernel named `whirlpool_mine`
 - Windows examples for ICMiners US/EU and Alphanumeric
 
-## Honest status
-
-The Alphanumeric CUDA engine is the maintained mining path in this source and includes host/GPU verification tests. The CapStash/OpenCL portion is still a scaffold and must not be presented as a production AMD or CapStash miner until its hashing and job path are fully validated.
-
-Do not ship this to miners until:
-
-1. `address_to_scriptpubkey()` is implemented from CapStash Core chainparams.
-2. `parse_notify()` is completed for your CapStash Stratum job format.
-3. Block header serialization is byte-for-byte identical to CapStash Core.
-4. CUDA digest output matches CapStash Core test vectors.
-5. Share target and submit payload are verified against your pool.
 
 ## Build: Windows / Visual Studio 2022
 
