@@ -11,7 +11,7 @@ int main(int argc, char** argv) {
         console_init();
         if(cfg.quiet_dashboard) log_set_quiet(true);
         print_banner();
-        log_line("capminer starting: Windows/Linux GPU-only, no dev fee, no CPU mining, no persistence");
+        log_line("capminer starting: Windows/Linux NVIDIA/AMD GPU-only, no dev fee, no CPU mining, no persistence");
         if(cfg.algo == "alphanumeric") {
             return alphanumeric::run(cfg);
         }

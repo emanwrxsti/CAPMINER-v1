@@ -44,7 +44,7 @@
 
 #include <cstdint>
 
-#if defined(__CUDACC__)
+#if defined(__CUDACC__) || defined(__HIPCC__)
   #define ALPHA_CORE_FN __host__ __device__ __forceinline__
   #define ALPHA_UNROLL _Pragma("unroll")
 #else
